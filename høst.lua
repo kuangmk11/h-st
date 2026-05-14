@@ -17,6 +17,46 @@ engine.name = "Harvest"
 
 local save_on_exit = true
 
+local tosc_host = nil
+local tosc_port = 10000
+local osc_incoming = false
+
+local function tosc_send(id, val)
+   if not tosc_host then
+      print("tosc_send: no host") return
+   end
+   if osc_incoming then return end
+   print("-> " .. tosc_host .. ":" .. tosc_port .. " /param/" .. id .. " " .. tostring(val))
+   osc.send({tosc_host, tosc_port}, "/param/" .. id, {val})
+end
+
+local tosc_param_ids = {
+   "focus",
+   "drone_amp", "drone_timbre", "drone_noise", "drone_bias", "drone_freq",
+   "poly_amp", "poly_timbre", "poly_noise", "poly_bias", "poly_shape",
+   "fx_amp", "fx_peak_1", "fx_peak_2", "fx_body", "fx_time",
+   "fx_res", "fx_fb", "fx_gain",
+   "poly_max_attack", "poly_max_release", "poly_scale",
+   "poly_hold", "poly_loop",
+}
+
+local function tosc_sync_all()
+   for _, id in ipairs(tosc_param_ids) do
+      osc.send({tosc_host, tosc_port}, "/param/" .. id, {params:get(id)})
+   end
+end
+
+local function tosc_wrap(id)
+   local p = params:lookup_param(id)
+   if p and p.action then
+      local orig = p.action
+      p.action = function(x)
+         orig(x)
+         tosc_send(id, x)
+      end
+   end
+end
+
 local g = grid.connect()
 local a = arc.connect()
 
@@ -207,7 +247,7 @@ function init()
       type = "group",
       id   = "harvest",
       name = "HØST",
-      n    = 29
+      n    = 33
    }
 
    params:add{
@@ -229,7 +269,7 @@ function init()
       end
    }
 
-   Harvest.init(false)
+   Harvest.init(true)
 
    params:add{
       type        = "option",
@@ -249,9 +289,32 @@ function init()
 
    if save_on_exit then params:read(norns.state.data .. "state.pset") end
 
+   -- wrap all params to mirror changes to TouchOSC
+   for _, id in ipairs(tosc_param_ids) do
+      tosc_wrap(id)
+   end
+
    params:bang()
 
    params:set("focus", 1)
+
+   osc.event = function(path, args, from)
+      -- auto-discover TouchOSC host from any incoming message
+      if from and from[1] and from[1] ~= "127.0.0.1" then
+         if tosc_host ~= from[1] then
+            tosc_host = from[1]
+            print("tosc host: " .. tosc_host)
+            tosc_sync_all()
+         end
+      end
+      -- handle /param/<id> OSC
+      if path:sub(1, 7) == "/param/" then
+         local id = path:sub(8)
+         osc_incoming = true
+         params:set(id, args[1])
+         osc_incoming = false
+      end
+   end
 end
 
 -- norns: keys
